@@ -13,9 +13,10 @@ jobs:
       # ============================================================
       # 1. CREATE WINDOWS USER
       # ============================================================
-      - name: Create Remote User
+      - name: Create VNC User
         shell: powershell
         run: |
+
           $username = "VNC"
           $password = "Password123"
 
@@ -29,13 +30,18 @@ jobs:
             -ErrorAction SilentlyContinue
 
           if ($existing) {
-              Write-Host "User already exists. Resetting password..."
+
+              Write-Host "User already exists."
+              Write-Host "Resetting password..."
+
               Set-LocalUser `
                 -Name $username `
                 -Password $securePassword
+
           }
           else {
-              Write-Host "Creating user..."
+
+              Write-Host "Creating VNC user..."
 
               New-LocalUser `
                 -Name $username `
@@ -44,14 +50,16 @@ jobs:
                 -PasswordNeverExpires
           }
 
-          # Administrator access
+          # Administrator
           Add-LocalGroupMember `
             -Group "Administrators" `
             -Member $username `
             -ErrorAction SilentlyContinue
 
-          Write-Host "User created:"
-          Write-Host "Username: $username"
+          Write-Host ""
+          Write-Host "VNC USER READY"
+          Write-Host "Username : $username"
+          Write-Host "Password : $password"
 
 
       # ============================================================
@@ -72,19 +80,12 @@ jobs:
             -OutFile $installer
 
           if (-not (Test-Path $installer)) {
+
               Write-Error "TightVNC installer was not downloaded."
               exit 1
           }
 
           Write-Host "Installing TightVNC..."
-
-          # TightVNC MSI configuration
-          #
-          # Password:
-          # Password123
-          #
-          # VNC port:
-          # 5900
 
           $arguments = @(
               "/i"
@@ -114,6 +115,7 @@ jobs:
           Write-Host "MSI exit code: $($process.ExitCode)"
 
           if ($process.ExitCode -ne 0) {
+
               Write-Error "TightVNC installation failed."
               exit 1
           }
@@ -141,18 +143,21 @@ jobs:
           $tvnserver = $null
 
           foreach ($path in $paths) {
+
               if (Test-Path $path) {
+
                   $tvnserver = $path
                   break
               }
           }
 
           if (-not $tvnserver) {
+
               Write-Error "tvnserver.exe was not found."
               exit 1
           }
 
-          Write-Host "TightVNC:"
+          Write-Host "TightVNC executable:"
           Write-Host $tvnserver
 
           echo "TVNSERVER=$tvnserver" >> $env:GITHUB_ENV
@@ -165,7 +170,7 @@ jobs:
         shell: powershell
         run: |
 
-          Write-Host "Starting TightVNC service..."
+          Write-Host "Checking TightVNC service..."
 
           $service = Get-Service `
             -Name "tvnserver" `
@@ -173,12 +178,16 @@ jobs:
 
           if ($service) {
 
-              Write-Host "TightVNC service found."
+              Write-Host "Service found."
+              Write-Host "Current status: $($service.Status)"
 
               if ($service.Status -ne "Running") {
 
+                  Write-Host "Starting TightVNC service..."
+
                   Start-Service `
-                    -Name "tvnserver"
+                    -Name "tvnserver" `
+                    -ErrorAction Stop
 
                   Start-Sleep 5
               }
@@ -186,27 +195,21 @@ jobs:
           }
           else {
 
-              Write-Host "Service not found."
+              Write-Host "TightVNC service not found."
+              Write-Host "Starting tvnserver directly..."
 
-              # Start server directly
               Start-Process `
                 -FilePath "$env:TVNSERVER" `
-                -ArgumentList "-start" `
                 -WindowStyle Hidden
 
               Start-Sleep 5
           }
 
-          # Reload configuration
-          & "$env:TVNSERVER" -reload 2>$null
-
-          Start-Sleep 3
-
           Write-Host "TightVNC started."
 
 
       # ============================================================
-      # 5. VERIFY VNC
+      # 5. VERIFY VNC PORT
       # ============================================================
       - name: Verify VNC
         shell: powershell
@@ -222,8 +225,9 @@ jobs:
           if (-not $result.TcpTestSucceeded) {
 
               Write-Host ""
-              Write-Host "VNC port 5900 is NOT available."
-              Write-Host ""
+              Write-Host "========================================"
+              Write-Host "VNC PORT 5900 IS NOT AVAILABLE"
+              Write-Host "========================================"
 
               Get-Service `
                 -Name "tvnserver" `
@@ -232,11 +236,11 @@ jobs:
               exit 1
           }
 
-          Write-Host "VNC port 5900 is OK."
+          Write-Host "VNC port 5900 OK."
 
 
       # ============================================================
-      # 6. INSTALL PYTHON
+      # 6. SETUP PYTHON
       # ============================================================
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -251,15 +255,14 @@ jobs:
         shell: powershell
         run: |
 
+          Write-Host "Installing websockify..."
+
           python -m pip install --upgrade pip
 
           python -m pip install websockify
 
-          Write-Host "Checking websockify..."
-
-          python -m websockify --help
-
           if ($LASTEXITCODE -ne 0) {
+
               Write-Error "Websockify installation failed."
               exit 1
           }
@@ -277,6 +280,7 @@ jobs:
           $noVNC = "C:\noVNC"
 
           if (Test-Path $noVNC) {
+
               Remove-Item `
                 $noVNC `
                 -Recurse `
@@ -291,6 +295,7 @@ jobs:
             $noVNC
 
           if (-not (Test-Path "$noVNC\vnc.html")) {
+
               Write-Error "noVNC installation failed."
               exit 1
           }
@@ -307,13 +312,12 @@ jobs:
 
           Write-Host "Configuring firewall..."
 
-          # Remove old rules
           netsh advfirewall firewall delete rule `
-            name="noVNC-Tailscale" `
+            name="VNC-Tailscale" `
             2>$null
 
           netsh advfirewall firewall delete rule `
-            name="VNC-Tailscale" `
+            name="noVNC-Tailscale" `
             2>$null
 
           # VNC
@@ -370,6 +374,7 @@ jobs:
           $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
 
           if (-not (Test-Path $tailscale)) {
+
               Write-Error "Tailscale installation failed."
               exit 1
           }
@@ -386,6 +391,7 @@ jobs:
         shell: powershell
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+
         run: |
 
           $tailscale = "$env:TAILSCALE"
@@ -397,6 +403,7 @@ jobs:
             --hostname="gh-novnc-$env:GITHUB_RUN_ID"
 
           if ($LASTEXITCODE -ne 0) {
+
               Write-Error "Tailscale connection failed."
               exit 1
           }
@@ -413,6 +420,7 @@ jobs:
               ).Trim()
 
               if ($tsIP -match '^\d+\.\d+\.\d+\.\d+$') {
+
                   break
               }
 
@@ -420,6 +428,7 @@ jobs:
           }
 
           if (-not $tsIP) {
+
               Write-Error "Tailscale IP was not assigned."
               exit 1
           }
@@ -428,97 +437,130 @@ jobs:
 
           Write-Host ""
           Write-Host "========================================"
-          Write-Host " TAILSCALE CONNECTED"
-          Write-Host " IP: $tsIP"
+          Write-Host "TAILSCALE CONNECTED"
+          Write-Host "IP: $tsIP"
           Write-Host "========================================"
 
 
       # ============================================================
-      # 12. START NOVNC
+      # 12. START NOVNC / WEBSOCKIFY
       # ============================================================
       - name: Start noVNC
         shell: powershell
         run: |
 
-          $logFile = "C:\noVNC\websockify.log"
+          $noVNC = "C:\noVNC"
+
+          $logFile = "$noVNC\websockify.log"
+          $errorFile = "$noVNC\websockify-error.log"
 
           Write-Host "Starting noVNC..."
 
-          # IMPORTANT:
-          #
-          # 6080 = browser / WebSocket
-          # 5900 = TightVNC
-          #
-          # noVNC static files are served from C:\noVNC
+          # Remove old logs
+          Remove-Item `
+            $logFile `
+            -Force `
+            -ErrorAction SilentlyContinue
 
-          $arguments = @(
-              "-m"
-              "websockify"
-              "--web=C:\noVNC"
-              "0.0.0.0:6080"
-              "127.0.0.1:5900"
-          )
+          Remove-Item `
+            $errorFile `
+            -Force `
+            -ErrorAction SilentlyContinue
 
-          Start-Process `
-            -FilePath "python" `
-            -ArgumentList $arguments `
-            -RedirectStandardOutput $logFile `
-            -RedirectStandardError "C:\noVNC\websockify-error.log" `
-            -WindowStyle Hidden
+          # Kill previous websockify processes
+          Get-CimInstance Win32_Process |
+            Where-Object {
+              $_.CommandLine -match "websockify"
+            } |
+            ForEach-Object {
 
-          Start-Sleep 8
+              Write-Host "Stopping old websockify PID $($_.ProcessId)"
 
-          Write-Host "Checking noVNC..."
+              Stop-Process `
+                -Id $_.ProcessId `
+                -Force `
+                -ErrorAction SilentlyContinue
+            }
 
-          $result = Test-NetConnection `
-            -ComputerName 127.0.0.1 `
-            -Port 6080 `
-            -WarningAction SilentlyContinue
+          Start-Sleep 2
 
-          if (-not $result.TcpTestSucceeded) {
+          Write-Host "Launching websockify..."
+
+          $command = @"
+cd /d C:\noVNC
+python -m websockify --web=C:\noVNC 0.0.0.0:6080 127.0.0.1:5900 > "$logFile" 2> "$errorFile"
+"@
+
+          $process = Start-Process `
+            -FilePath "cmd.exe" `
+            -ArgumentList "/c", $command `
+            -WindowStyle Hidden `
+            -PassThru
+
+          Write-Host "websockify PID: $($process.Id)"
+
+          Start-Sleep 10
+
+          $port = Get-NetTCPConnection `
+            -LocalPort 6080 `
+            -State Listen `
+            -ErrorAction SilentlyContinue
+
+          if (-not $port) {
 
               Write-Host ""
-              Write-Host "noVNC failed to start."
-              Write-Host ""
+              Write-Host "========================================"
+              Write-Host "NOVNC FAILED TO START"
+              Write-Host "========================================"
 
               if (Test-Path $logFile) {
+
+                  Write-Host ""
+                  Write-Host "===== WEBSOCKIFY LOG ====="
                   Get-Content $logFile
               }
 
-              if (Test-Path "C:\noVNC\websockify-error.log") {
-                  Get-Content "C:\noVNC\websockify-error.log"
+              if (Test-Path $errorFile) {
+
+                  Write-Host ""
+                  Write-Host "===== WEBSOCKIFY ERROR ====="
+                  Get-Content $errorFile
               }
 
               exit 1
           }
 
-          Write-Host "noVNC is running."
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "NOVNC RUNNING"
+          Write-Host "PORT: 6080"
+          Write-Host "========================================"
 
 
       # ============================================================
-      # 13. TEST TAILSCALE ACCESS
+      # 13. DISPLAY CONNECTION INFORMATION
       # ============================================================
-      - name: Verify noVNC
+      - name: Display Connection Information
         shell: powershell
         run: |
 
           Write-Host ""
           Write-Host "========================================"
-          Write-Host "             noVNC READY"
+          Write-Host "          NOVNC READY"
           Write-Host "========================================"
           Write-Host ""
 
           Write-Host "Tailscale IP:"
-          Write-Host $env:TAILSCALE_IP
+          Write-Host "$env:TAILSCALE_IP"
 
           Write-Host ""
 
-          Write-Host "Browser:"
+          Write-Host "Browser URL:"
           Write-Host "http://$env:TAILSCALE_IP:6080/vnc.html"
 
           Write-Host ""
 
-          Write-Host "VNC:"
+          Write-Host "VNC Server:"
           Write-Host "$env:TAILSCALE_IP`:5900"
 
           Write-Host ""
@@ -527,6 +569,7 @@ jobs:
           Write-Host "Password123"
 
           Write-Host ""
+
           Write-Host "========================================"
 
 
@@ -539,7 +582,7 @@ jobs:
 
           Write-Host ""
           Write-Host "========================================"
-          Write-Host "        noVNC SESSION ACTIVE"
+          Write-Host "       NOVNC SESSION ACTIVE"
           Write-Host "========================================"
           Write-Host ""
           Write-Host "URL:"
@@ -555,47 +598,151 @@ jobs:
 
           while ($true) {
 
-              # Keep Tailscale alive
-              & "$env:TAILSCALE" status 2>$null
+              # ==================================================
+              # CHECK TAILSCALE
+              # ==================================================
 
-              # Keep VNC service alive
-              $vncService = Get-Service `
-                -Name "tvnserver" `
+              $tsStatus = & "$env:TAILSCALE" status 2>$null
+
+              if ($LASTEXITCODE -ne 0) {
+
+                  Write-Host "WARNING: Tailscale status check failed."
+              }
+
+
+              # ==================================================
+              # CHECK VNC 5900
+              # ==================================================
+
+              $vncPort = Get-NetTCPConnection `
+                -LocalPort 5900 `
+                -State Listen `
                 -ErrorAction SilentlyContinue
 
-              if ($vncService) {
+              if (-not $vncPort) {
 
-                  if ($vncService.Status -ne "Running") {
+                  Write-Host ""
+                  Write-Host "VNC 5900 is NOT listening."
 
-                      Write-Host "TightVNC stopped. Restarting..."
+                  $service = Get-Service `
+                    -Name "tvnserver" `
+                    -ErrorAction SilentlyContinue
 
-                      Start-Service `
-                        -Name "tvnserver" `
-                        -ErrorAction SilentlyContinue
+                  if ($service) {
+
+                      Write-Host "TightVNC status: $($service.Status)"
+
+                      if ($service.Status -ne "Running") {
+
+                          Write-Host "Starting TightVNC..."
+
+                          Start-Service `
+                            -Name "tvnserver" `
+                            -ErrorAction SilentlyContinue
+
+                          Start-Sleep 5
+                      }
                   }
               }
 
-              # Keep noVNC alive
-              $port = Get-NetTCPConnection `
+
+              # ==================================================
+              # CHECK NOVNC 6080
+              # ==================================================
+
+              $novncPort = Get-NetTCPConnection `
                 -LocalPort 6080 `
                 -State Listen `
                 -ErrorAction SilentlyContinue
 
-              if (-not $port) {
+              if (-not $novncPort) {
 
-                  Write-Host "noVNC stopped. Restarting..."
+                  Write-Host ""
+                  Write-Host "========================================"
+                  Write-Host "noVNC STOPPED"
+                  Write-Host "RESTARTING..."
+                  Write-Host "========================================"
+
+                  # Show previous error
+                  if (Test-Path "C:\noVNC\websockify-error.log") {
+
+                      Write-Host ""
+                      Write-Host "===== PREVIOUS ERROR ====="
+
+                      Get-Content `
+                        "C:\noVNC\websockify-error.log" `
+                        -Tail 30
+                  }
+
+                  # Kill old websockify
+                  Get-CimInstance Win32_Process |
+                    Where-Object {
+                      $_.CommandLine -match "websockify"
+                    } |
+                    ForEach-Object {
+
+                      Write-Host "Stopping websockify PID $($_.ProcessId)"
+
+                      Stop-Process `
+                        -Id $_.ProcessId `
+                        -Force `
+                        -ErrorAction SilentlyContinue
+                    }
+
+                  Start-Sleep 2
+
+                  # Start again
+                  $command = @"
+cd /d C:\noVNC
+python -m websockify --web=C:\noVNC 0.0.0.0:6080 127.0.0.1:5900
+"@
 
                   Start-Process `
-                    -FilePath "python" `
-                    -ArgumentList @(
-                      "-m"
-                      "websockify"
-                      "--web=C:\noVNC"
-                      "0.0.0.0:6080"
-                      "127.0.0.1:5900"
-                    ) `
+                    -FilePath "cmd.exe" `
+                    -ArgumentList "/c", $command `
                     -WindowStyle Hidden
+
+                  Start-Sleep 10
+
+                  # Check again
+                  $novncPort = Get-NetTCPConnection `
+                    -LocalPort 6080 `
+                    -State Listen `
+                    -ErrorAction SilentlyContinue
+
+                  if ($novncPort) {
+
+                      Write-Host ""
+                      Write-Host "noVNC successfully restarted."
+
+                  }
+                  else {
+
+                      Write-Host ""
+                      Write-Host "WARNING: noVNC failed to restart."
+
+                      if (Test-Path "C:\noVNC\websockify-error.log") {
+
+                          Write-Host ""
+                          Write-Host "===== NOVNC ERROR ====="
+
+                          Get-Content `
+                            "C:\noVNC\websockify-error.log" `
+                            -Tail 50
+                      }
+                  }
+
               }
+              else {
+
+                  Write-Host `
+                    "$(Get-Date -Format 'HH:mm:ss') - noVNC OK :6080"
+              }
+
+
+              # ==================================================
+              # WAIT
+              # ==================================================
 
               Start-Sleep 60
           }
