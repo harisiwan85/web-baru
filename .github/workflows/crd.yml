@@ -16,46 +16,48 @@ on:
 jobs:
   windows-rdp:
     runs-on: windows-latest
-    timeout-minutes: 360
+    timeout-minutes: 360  # Maksimal 6 jam
     
     steps:
+      # STEP 1: Download dan Install Chrome Remote Desktop
       - name: Download and Install Chrome Remote Desktop
         shell: pwsh
         run: |
           # URL download yang benar
-          $url = "https://dl.google.com/chrome-remote-desktop/chromeremotedesktophost.msi"
+          $url = "https://dl.google.com/edgedl/chrome-remote-desktop/chromeremotedesktophost.msi"
           $installer = "$env:TEMP\chromeremotedesktop.msi"
           
-          Write-Host "Downloading Chrome Remote Desktop..."
+          Write-Host "📥 Downloading Chrome Remote Desktop..."
           Invoke-WebRequest -Uri $url -OutFile $installer
           
-          Write-Host "Installing Chrome Remote Desktop..."
+          Write-Host "📦 Installing Chrome Remote Desktop..."
           Start-Process -FilePath "msiexec" -ArgumentList "/i `"$installer`" /quiet /norestart" -Wait
           
-          Write-Host "Installation completed!"
+          Write-Host "✅ Installation completed!"
           
+      # STEP 2: Setup Chrome Remote Desktop dengan Auth Code dan PIN
       - name: Setup Chrome Remote Desktop
         shell: pwsh
         run: |
           $authCode = "${{ github.event.inputs.auth_code }}"
           $pinCode = "${{ github.event.inputs.pin_code }}"
           
-          # Clean auth code - ambil hanya kode jika ada perintah lengkap
+          # Bersihkan auth code - ambil hanya kode jika ada perintah lengkap
           if ($authCode -match '--code="([^"]+)"') {
               $authCode = $Matches[1]
           }
           $authCode = $authCode -replace '^"|"$', ''  # Hapus kutip di awal/akhir
           $authCode = $authCode.Trim()
           
-          Write-Host "Auth Code: $authCode"
-          Write-Host "PIN: $pinCode"
+          Write-Host "🔑 Auth Code: $authCode"
+          Write-Host "🔢 PIN: $pinCode"
           
-          # Path ke CRD
+          # Path ke executable CRD
           $crdPath = "${Env:PROGRAMFILES(X86)}\Google\Chrome Remote Desktop\CurrentVersion\remoting_start_host.exe"
           
           # Cek apakah file exists
           if (Test-Path $crdPath) {
-              Write-Host "CRD found at: $crdPath"
+              Write-Host "✅ CRD found at: $crdPath"
               
               # Setup dengan auth code
               & $crdPath --code="$authCode" --redirect-url="https://remotedesktop.google.com/_/oauthredirect" --name="$env:COMPUTERNAME"
@@ -63,21 +65,26 @@ jobs:
               # Setup PIN
               & $crdPath --pin="$pinCode"
               
-              Write-Host "Chrome Remote Desktop setup completed!"
+              Write-Host "✅ Chrome Remote Desktop setup completed!"
           } else {
-              Write-Host "CRD not found at: $crdPath"
-              # Coba cari di lokasi lain
+              Write-Host "❌ CRD not found at: $crdPath"
+              # Coba cari di lokasi alternatif
               $altPath = "C:\Program Files (x86)\Google\Chrome Remote Desktop\CurrentVersion\remoting_start_host.exe"
               if (Test-Path $altPath) {
-                  Write-Host "Found at alternative location: $altPath"
+                  Write-Host "✅ Found at alternative location: $altPath"
                   & $altPath --code="$authCode" --redirect-url="https://remotedesktop.google.com/_/oauthredirect" --name="$env:COMPUTERNAME"
                   & $altPath --pin="$pinCode"
+              } else {
+                  Write-Host "❌ CRD tidak ditemukan. Instalasi mungkin gagal."
+                  exit 1
               }
           }
           
+      # STEP 3: Tampilkan Informasi Koneksi
       - name: Display Connection Info
         shell: pwsh
         run: |
+          Write-Host ""
           Write-Host "========================================"
           Write-Host "✅ RDP VIA CHROME REMOTE DESKTOP READY"
           Write-Host "========================================"
@@ -90,14 +97,16 @@ jobs:
           Write-Host ""
           Write-Host "⏱️ Session aktif selama 6 jam (maksimal)"
           Write-Host "========================================"
+          Write-Host ""
           
+      # STEP 4: Menjaga Sesi Tetap Aktif
       - name: Keep Session Alive
         shell: pwsh
         run: |
-          Write-Host "Menjaga sesi tetap aktif..."
+          Write-Host "🔄 Menjaga sesi tetap aktif..."
           $counter = 0
           while ($true) {
             $counter++
             Write-Host "[$counter] Sesi aktif - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-            Start-Sleep -Seconds 300
+            Start-Sleep -Seconds 300  # 5 menit
           }
