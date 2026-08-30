@@ -11,7 +11,7 @@ jobs:
     steps:
 
       # ==========================================
-      # 1. SETUP NODE.JS
+      # 1. NODE.JS
       # ==========================================
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -20,7 +20,7 @@ jobs:
 
 
       # ==========================================
-      # 2. INSTALL TAILSCALE
+      # 2. TAILSCALE
       # ==========================================
       - name: Install Tailscale
         shell: powershell
@@ -40,17 +40,18 @@ jobs:
               exit 1
           }
 
-          Write-Host "Installing Tailscale..."
-
           $p = Start-Process `
             msiexec.exe `
             -ArgumentList "/i `"$installer`" /quiet /norestart" `
             -Wait `
             -PassThru
 
-          Write-Host "MSI exit code: $($p.ExitCode)"
-
           Remove-Item $installer -Force
+
+          if ($p.ExitCode -ne 0) {
+              Write-Error "Tailscale installation failed."
+              exit 1
+          }
 
           $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
 
@@ -60,11 +61,9 @@ jobs:
           }
 
           "TAILSCALE=$tailscale" | Out-File `
-            -FilePath $env:GITHUB_ENV `
+            $env:GITHUB_ENV `
             -Encoding utf8 `
             -Append
-
-          Write-Host "Tailscale installed."
 
 
       # ==========================================
@@ -83,18 +82,16 @@ jobs:
               exit 1
           }
 
-          Write-Host "Connecting to Tailscale..."
+          Write-Host "Connecting Tailscale..."
 
           & $tailscale up `
             --authkey="$env:TAILSCALE_AUTH_KEY" `
-            --hostname="gh-meshcentral-$env:GITHUB_RUN_ID"
+            --hostname="gh-mesh-$env:GITHUB_RUN_ID"
 
           if ($LASTEXITCODE -ne 0) {
               Write-Error "Tailscale connection failed."
               exit 1
           }
-
-          Write-Host "Tailscale connected."
 
           $tailscaleIP = $null
 
@@ -136,7 +133,7 @@ jobs:
           Write-Host "=========================================="
 
           "TAILSCALE_IP=$tailscaleIP" | Out-File `
-            -FilePath $env:GITHUB_ENV `
+            $env:GITHUB_ENV `
             -Encoding utf8 `
             -Append
 
@@ -149,13 +146,6 @@ jobs:
         run: |
 
           $meshDir = "C:\MeshCentral"
-
-          if (Test-Path $meshDir) {
-              Remove-Item `
-                $meshDir `
-                -Recurse `
-                -Force
-          }
 
           New-Item `
             -ItemType Directory `
@@ -175,11 +165,6 @@ jobs:
 
           Write-Host "MeshCentral installed."
 
-          Write-Host ""
-          Write-Host "MeshCentral version:"
-
-          node node_modules\meshcentral --version
-
 
       # ==========================================
       # 5. CREATE MESHCENTRAL CONFIG
@@ -189,42 +174,45 @@ jobs:
         run: |
 
           $meshDir = "C:\MeshCentral"
-
-          $config = @'
-{
-  "settings": {
-    "Cert": "localhost",
-    "Port": 4430,
-    "AliasPort": 4430,
-    "WANonly": false,
-    "Minify": true,
-    "WebRTC": true
-  },
-  "domains": {
-    "": {
-      "Title": "GitHub MeshCentral",
-      "Title2": "Remote Desktop",
-      "NewAccounts": true,
-      "UserNameIsEmail": false
-    }
-  }
-}
-'@
-
-          $configPath = "$meshDir\meshcentral-data\config.json"
+          $dataDir = "$meshDir\meshcentral-data"
 
           New-Item `
             -ItemType Directory `
-            -Path "$meshDir\meshcentral-data" `
+            -Path $dataDir `
             -Force | Out-Null
 
-          Set-Content `
-            -Path $configPath `
-            -Value $config `
-            -Encoding UTF8
+          $config = @{
+              settings = @{
+                  Cert = "100.64.0.1"
+                  Port = 4430
+                  AliasPort = 4430
+                  WANonly = $true
+                  Minify = $true
+                  WebRTC = $true
+                  AgentPing = 30
+                  AgentPong = 30
+              }
 
-          Write-Host "MeshCentral config created."
+              domains = @{
+                  "" = @{
+                      Title = "GitHub MeshCentral"
+                      Title2 = "Remote Desktop"
+                      NewAccounts = $true
+                      UserNameIsEmail = $false
+                  }
+              }
+          }
 
+          $configPath = "$dataDir\config.json"
+
+          $config |
+            ConvertTo-Json -Depth 10 |
+            Set-Content `
+              -Path $configPath `
+              -Encoding UTF8
+
+          Write-Host ""
+          Write-Host "MeshCentral config:"
           Get-Content $configPath
 
 
@@ -246,26 +234,73 @@ jobs:
             protocol=TCP `
             localport=4430
 
-          Write-Host "Firewall configured."
+          Write-Host "Firewall rule created."
 
 
       # ==========================================
-      # 7. START MESHCENTRAL
+      # 7. CREATE MESHCENTRAL ACCOUNT
+      # ==========================================
+      - name: Create MeshCentral Account
+        shell: powershell
+        run: |
+
+          Set-Location "C:\MeshCentral"
+
+          $user = "admin"
+          $pass = "MeshAdmin-2026-ChangeMe"
+
+          Write-Host "Creating MeshCentral account..."
+
+          node node_modules\meshcentral `
+            --createaccount $user `
+            --pass $pass
+
+          if ($LASTEXITCODE -ne 0) {
+
+              Write-Host "Account may already exist."
+              Write-Host "Continuing..."
+          }
+
+          node node_modules\meshcentral `
+            --adminaccount $user
+
+          Write-Host "MeshCentral account ready."
+
+          "MESH_USER=$user" | Out-File `
+            $env:GITHUB_ENV `
+            -Encoding utf8 `
+            -Append
+
+          "MESH_PASS=$pass" | Out-File `
+            $env:GITHUB_ENV `
+            -Encoding utf8 `
+            -Append
+
+
+      # ==========================================
+      # 8. START MESHCENTRAL
       # ==========================================
       - name: Start MeshCentral
         shell: powershell
         run: |
 
-          $meshDir = "C:\MeshCentral"
-
-          Set-Location $meshDir
+          Set-Location "C:\MeshCentral"
 
           Write-Host "Starting MeshCentral..."
+
+          $logFile = "C:\MeshCentral\meshcentral.log"
+
+          Remove-Item `
+            $logFile `
+            -Force `
+            -ErrorAction SilentlyContinue
 
           $process = Start-Process `
             -FilePath "node.exe" `
             -ArgumentList "node_modules\meshcentral" `
-            -WorkingDirectory $meshDir `
+            -WorkingDirectory "C:\MeshCentral" `
+            -RedirectStandardOutput $logFile `
+            -RedirectStandardError $logFile `
             -WindowStyle Hidden `
             -PassThru
 
@@ -281,8 +316,12 @@ jobs:
 
               Write-Host ""
               Write-Host "=========================================="
-              Write-Host "MESHCENTRAL PROCESS STOPPED"
+              Write-Host "MESHCENTRAL STOPPED"
               Write-Host "=========================================="
+
+              if (Test-Path $logFile) {
+                  Get-Content $logFile
+              }
 
               exit 1
           }
@@ -291,43 +330,319 @@ jobs:
 
 
       # ==========================================
-      # 8. CHECK MESHCENTRAL PORT
+      # 9. WAIT FOR PORT
       # ==========================================
-      - name: Verify MeshCentral
+      - name: Wait for MeshCentral
         shell: powershell
         run: |
 
-          Write-Host "Checking MeshCentral port 4430..."
+          Write-Host "Waiting for MeshCentral port 4430..."
 
-          $port = Get-NetTCPConnection `
-            -LocalPort 4430 `
-            -State Listen `
-            -ErrorAction SilentlyContinue
+          $ready = $false
 
-          if (-not $port) {
+          for ($i = 1; $i -le 30; $i++) {
+
+              $port = Get-NetTCPConnection `
+                -LocalPort 4430 `
+                -State Listen `
+                -ErrorAction SilentlyContinue
+
+              if ($port) {
+
+                  $ready = $true
+                  break
+              }
+
+              Write-Host "Waiting... $i/30"
+
+              Start-Sleep 2
+          }
+
+          if (-not $ready) {
 
               Write-Host ""
               Write-Host "=========================================="
-              Write-Host "MESHCENTRAL PORT 4430 NOT LISTENING"
+              Write-Host "PORT 4430 NOT LISTENING"
               Write-Host "=========================================="
+
+              if (Test-Path "C:\MeshCentral\meshcentral.log") {
+                  Get-Content "C:\MeshCentral\meshcentral.log"
+              }
 
               exit 1
           }
 
-          Write-Host "MeshCentral port 4430 OK."
+          Write-Host "MeshCentral port 4430 is ready."
 
 
       # ==========================================
-      # 9. SHOW CONNECTION
+      # 10. CREATE DEVICE GROUP
+      # ==========================================
+      - name: Create Device Group
+        shell: powershell
+        run: |
+
+          Set-Location "C:\MeshCentral"
+
+          Write-Host "Creating device group..."
+
+          $output = node `
+            node_modules\meshcentral\meshctrl `
+            adddevicegroup `
+            --name "GitHub Runner" `
+            --desc "Temporary GitHub Actions Windows Runner" `
+            --url "wss://127.0.0.1:4430" `
+            --loginuser "$env:MESH_USER" `
+            --loginpass "$env:MESH_PASS" `
+            --ignorecert 2>&1
+
+          Write-Host $output
+
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "Failed to create device group."
+              exit 1
+          }
+
+          Write-Host "Device group created."
+
+
+      # ==========================================
+      # 11. GET DEVICE GROUP ID
+      # ==========================================
+      - name: Get Device Group ID
+        shell: powershell
+        run: |
+
+          Set-Location "C:\MeshCentral"
+
+          Write-Host "Getting device group..."
+
+          $json = node `
+            node_modules\meshcentral\meshctrl `
+            listdevicegroups `
+            --json `
+            --url "wss://127.0.0.1:4430" `
+            --loginuser "$env:MESH_USER" `
+            --loginpass "$env:MESH_PASS" `
+            --ignorecert
+
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "Unable to get device groups."
+              exit 1
+          }
+
+          $groups = $json | ConvertFrom-Json
+
+          $group = $groups |
+            Where-Object {
+                $_.name -eq "GitHub Runner"
+            } |
+            Select-Object -First 1
+
+          if (-not $group) {
+
+              Write-Host ""
+              Write-Host "Available groups:"
+              $json
+
+              Write-Error "GitHub Runner device group not found."
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "Device Group:"
+          Write-Host $group.name
+
+          Write-Host "Device Group ID:"
+          Write-Host $group._id
+
+          "MESH_GROUP_ID=$($group._id)" | Out-File `
+            $env:GITHUB_ENV `
+            -Encoding utf8 `
+            -Append
+
+
+      # ==========================================
+      # 12. DOWNLOAD WINDOWS MESH AGENT
+      # ==========================================
+      - name: Download Mesh Agent
+        shell: powershell
+        run: |
+
+          Set-Location "C:\MeshCentral"
+
+          Write-Host "Downloading Windows Mesh Agent..."
+
+          $agentPath = "C:\MeshCentral\meshagent.exe"
+
+          node `
+            node_modules\meshcentral\meshctrl `
+            agentdownload `
+            --id "$env:MESH_GROUP_ID" `
+            --type 4 `
+            --output "$agentPath" `
+            --url "wss://127.0.0.1:4430" `
+            --loginuser "$env:MESH_USER" `
+            --loginpass "$env:MESH_PASS" `
+            --ignorecert
+
+          if ($LASTEXITCODE -ne 0) {
+
+              Write-Error "Mesh Agent download failed."
+              exit 1
+          }
+
+          if (-not (Test-Path $agentPath)) {
+
+              Write-Error "meshagent.exe was not created."
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "Mesh Agent downloaded:"
+          Write-Host $agentPath
+
+
+      # ==========================================
+      # 13. INSTALL MESH AGENT
+      # ==========================================
+      - name: Install Mesh Agent
+        shell: powershell
+        run: |
+
+          $agent = "C:\MeshCentral\meshagent.exe"
+
+          Write-Host "Installing Mesh Agent..."
+
+          $process = Start-Process `
+            -FilePath $agent `
+            -ArgumentList "-fullinstall" `
+            -Wait `
+            -PassThru
+
+          Write-Host "Mesh Agent exit code: $($process.ExitCode)"
+
+          Start-Sleep 10
+
+          $installed = Test-Path `
+            "$env:ProgramFiles\Mesh Agent\MeshAgent.exe"
+
+          if (-not $installed) {
+
+              Write-Host "Checking alternative installation path..."
+
+              $installed = Test-Path `
+                "${env:ProgramFiles(x86)}\Mesh Agent\MeshAgent.exe"
+          }
+
+          if (-not $installed) {
+
+              Write-Error "Mesh Agent does not appear to be installed."
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "=========================================="
+          Write-Host "MESH AGENT INSTALLED"
+          Write-Host "=========================================="
+
+
+      # ==========================================
+      # 14. WAIT FOR AGENT
+      # ==========================================
+      - name: Wait for Agent
+        shell: powershell
+        run: |
+
+          Set-Location "C:\MeshCentral"
+
+          Write-Host "Waiting for Mesh Agent to connect..."
+
+          $connected = $false
+
+          for ($i = 1; $i -le 30; $i++) {
+
+              Write-Host "Checking agent... $i/30"
+
+              $output = node `
+                node_modules\meshcentral\meshctrl `
+                listdevices `
+                --json `
+                --url "wss://127.0.0.1:4430" `
+                --loginuser "$env:MESH_USER" `
+                --loginpass "$env:MESH_PASS" `
+                --ignorecert 2>$null
+
+              if ($output) {
+
+                  try {
+
+                      $devices = $output | ConvertFrom-Json
+
+                      if ($devices) {
+
+                          $runner = $devices |
+                            Where-Object {
+                                $_.name -like "*github*" -or
+                                $_.name -like "*runner*" -or
+                                $_.name -like "*actions*"
+                            } |
+                            Select-Object -First 1
+
+                          if ($runner) {
+
+                              $connected = $true
+
+                              Write-Host ""
+                              Write-Host "=========================================="
+                              Write-Host "MESH AGENT CONNECTED"
+                              Write-Host "DEVICE:"
+                              Write-Host $runner.name
+                              Write-Host "=========================================="
+
+                              break
+                          }
+                      }
+
+                  }
+                  catch {
+                  }
+              }
+
+              Start-Sleep 3
+          }
+
+          if (-not $connected) {
+
+              Write-Host ""
+              Write-Host "Agent did not appear yet."
+              Write-Host "Current devices:"
+
+              node `
+                node_modules\meshcentral\meshctrl `
+                listdevices `
+                --url "wss://127.0.0.1:4430" `
+                --loginuser "$env:MESH_USER" `
+                --loginpass "$env:MESH_PASS" `
+                --ignorecert
+
+              Write-Host ""
+              Write-Host "The agent may still be connecting."
+          }
+
+
+      # ==========================================
+      # 15. SHOW CONNECTION
       # ==========================================
       - name: Show Connection
         shell: powershell
         run: |
 
           Write-Host ""
-          Write-Host "=========================================="
-          Write-Host "       MESHCENTRAL IS READY"
-          Write-Host "=========================================="
+          Write-Host ""
+          Write-Host "=============================================="
+          Write-Host "          MESHCENTRAL SESSION READY"
+          Write-Host "=============================================="
           Write-Host ""
 
           Write-Host "Tailscale IP:"
@@ -335,25 +650,38 @@ jobs:
 
           Write-Host ""
 
-          Write-Host "Open in browser:"
+          Write-Host "MeshCentral:"
           Write-Host "https://$env:TAILSCALE_IP`:4430"
 
           Write-Host ""
 
-          Write-Host "=========================================="
+          Write-Host "Username:"
+          Write-Host "$env:MESH_USER"
+
+          Write-Host ""
+
+          Write-Host "Password:"
+          Write-Host "$env:MESH_PASS"
+
+          Write-Host ""
+
+          Write-Host "=============================================="
+          Write-Host " Open the URL above from a device connected"
+          Write-Host " to your Tailscale network."
+          Write-Host "=============================================="
 
 
       # ==========================================
-      # 10. MAINTAIN CONNECTION
+      # 16. MAINTAIN CONNECTION
       # ==========================================
       - name: Maintain Connection
         shell: powershell
         run: |
 
           Write-Host ""
-          Write-Host "=========================================="
+          Write-Host "=============================================="
           Write-Host "       MESHCENTRAL SESSION ACTIVE"
-          Write-Host "=========================================="
+          Write-Host "=============================================="
           Write-Host ""
 
           Write-Host "URL:"
@@ -363,27 +691,54 @@ jobs:
 
           while ($true) {
 
+              # ------------------------------
+              # TAILSCALE
+              # ------------------------------
+
+              $tsIP = & "$env:TAILSCALE" ip -4 2>$null |
+                Select-Object -First 1
+
+              if ($tsIP) {
+                  Write-Host "$(Get-Date -Format 'HH:mm:ss') - Tailscale OK: $tsIP"
+              }
+              else {
+                  Write-Host "$(Get-Date -Format 'HH:mm:ss') - WARNING: Tailscale unavailable"
+              }
+
+
+              # ------------------------------
+              # MESHCENTRAL
+              # ------------------------------
+
               $port = Get-NetTCPConnection `
                 -LocalPort 4430 `
                 -State Listen `
                 -ErrorAction SilentlyContinue
 
               if ($port) {
-                  Write-Host "$(Get-Date -Format 'HH:mm:ss') - MeshCentral :4430 OK"
+                  Write-Host "MeshCentral :4430 OK"
               }
               else {
-                  Write-Host "$(Get-Date -Format 'HH:mm:ss') - WARNING: MeshCentral :4430 NOT LISTENING"
+                  Write-Host "WARNING: MeshCentral :4430 NOT LISTENING"
               }
 
-              $ts = & "$env:TAILSCALE" ip -4 2>$null |
-                Select-Object -First 1
 
-              if ($ts) {
-                  Write-Host "Tailscale: $ts"
+              # ------------------------------
+              # MESH AGENT
+              # ------------------------------
+
+              $agent = Get-Service `
+                -Name "Mesh Agent" `
+                -ErrorAction SilentlyContinue
+
+              if ($agent) {
+                  Write-Host "Mesh Agent: $($agent.Status)"
               }
               else {
-                  Write-Host "WARNING: Tailscale IP unavailable"
+                  Write-Host "WARNING: Mesh Agent service not found"
               }
+
+              Write-Host ""
 
               Start-Sleep 60
           }
