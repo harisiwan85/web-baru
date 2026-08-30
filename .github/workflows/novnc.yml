@@ -1,4 +1,3 @@
-```yaml
 name: noVNC
 
 on:
@@ -600,4 +599,3 @@ jobs:
 
               Start-Sleep 60
           }
-```
