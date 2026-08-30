@@ -1,0 +1,75 @@
+name: Windows CRD
+
+on:
+  workflow_dispatch:
+    inputs:
+      auth_code:
+        description: 'Chrome Remote Desktop Auth Code'
+        required: true
+        type: string
+      pin_code:
+        description: 'PIN Code (6 digit)'
+        required: true
+        type: string
+        default: '123456'
+
+jobs:
+  windows-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 360  # Maksimal 6 jam
+    
+    steps:
+      - name: Setup Chrome Remote Desktop
+        shell: pwsh
+        run: |
+          # Download Chrome Remote Desktop installer
+          $url = "https://dl.google.com/dl/cloudsdk/channels/rapid/GoogleChromeRemoteDesktopHost.exe"
+          $installer = "$env:TEMP\chromeremotedesktop.exe"
+          Invoke-WebRequest -Uri $url -OutFile $installer
+          
+          # Install silently
+          Start-Process -FilePath $installer -ArgumentList "/S" -Wait
+          
+          # Set pin
+          New-Item -Path "HKLM:\SOFTWARE\Policies\Google\Chrome" -Force | Out-Null
+          New-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Google\Chrome" -Name "RemoteAccessHostAllowClientPairing" -Value 1 -PropertyType DWord -Force | Out-Null
+          
+          # Jalankan setup dengan auth code dari input
+          $authCode = "${{ github.event.inputs.auth_code }}"
+          $pinCode = "${{ github.event.inputs.pin_code }}"
+          
+          # Hapus bagian "--start" dari auth code jika ada
+          $authCode = $authCode -replace "--start", ""
+          $authCode = $authCode.Trim()
+          
+          # Jalankan perintah auth
+          & "$env:ProgramFiles\Google\Chrome Remote Desktop\start_host.exe" --code="$authCode" --redirect-url="https://remotedesktop.google.com/_/oauthredirect" --name="$env:COMPUTERNAME"
+          
+          # Setup PIN
+          & "$env:ProgramFiles\Google\Chrome Remote Desktop\start_host.exe" --pin="$pinCode"
+          
+          Write-Host "Chrome Remote Desktop siap!"
+          
+      - name: Display Connection Info
+        shell: pwsh
+        run: |
+          Write-Host "========================================"
+          Write-Host "RDP VIA CHROME REMOTE DESKTOP READY"
+          Write-Host "========================================"
+          Write-Host ""
+          Write-Host "1. Buka https://remotedesktop.google.com/access"
+          Write-Host "2. Login dengan akun Google yang sama"
+          Write-Host "3. Cari komputer dengan nama: $env:COMPUTERNAME"
+          Write-Host "4. Gunakan PIN: ${{ github.event.inputs.pin_code }}"
+          Write-Host ""
+          Write-Host "Session aktif selama 6 jam (maksimal)"
+          Write-Host "========================================"
+          
+      - name: Keep Session Alive
+        shell: pwsh
+        run: |
+          Write-Host "Menjaga sesi tetap aktif..."
+          while ($true) {
+            Write-Host "Sesi aktif - $(Get-Date)"
+            Start-Sleep -Seconds 300
+          }
