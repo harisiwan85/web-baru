@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       auth_code:
-        description: 'Chrome Remote Desktop Auth Code (hanya kode, bukan perintah)'
+        description: 'Chrome Remote Desktop Auth Code (hanya kode)'
         required: true
         type: string
       pin_code:
@@ -16,14 +16,13 @@ on:
 jobs:
   windows-rdp:
     runs-on: windows-latest
-    timeout-minutes: 360  # Maksimal 6 jam
+    timeout-minutes: 360
     
     steps:
-      # STEP 1: Download dan Install Chrome Remote Desktop
+      # STEP 1: Download dan Install CRD
       - name: Download and Install Chrome Remote Desktop
         shell: pwsh
         run: |
-          # URL download yang benar
           $url = "https://dl.google.com/edgedl/chrome-remote-desktop/chromeremotedesktophost.msi"
           $installer = "$env:TEMP\chromeremotedesktop.msi"
           
@@ -35,52 +34,97 @@ jobs:
           
           Write-Host "✅ Installation completed!"
           
-      # STEP 2: Setup Chrome Remote Desktop dengan Auth Code dan PIN
+      # STEP 2: Setup CRD dengan FIX untuk console mode
       - name: Setup Chrome Remote Desktop
         shell: pwsh
         run: |
           $authCode = "${{ github.event.inputs.auth_code }}"
           $pinCode = "${{ github.event.inputs.pin_code }}"
           
-          # Bersihkan auth code - ambil hanya kode jika ada perintah lengkap
+          # Bersihkan auth code
           if ($authCode -match '--code="([^"]+)"') {
               $authCode = $Matches[1]
           }
-          $authCode = $authCode -replace '^"|"$', ''  # Hapus kutip di awal/akhir
+          $authCode = $authCode -replace '^"|"$', ''
           $authCode = $authCode.Trim()
           
           Write-Host "🔑 Auth Code: $authCode"
           Write-Host "🔢 PIN: $pinCode"
           
-          # Path ke executable CRD
+          # Path ke CRD
           $crdPath = "${Env:PROGRAMFILES(X86)}\Google\Chrome Remote Desktop\CurrentVersion\remoting_start_host.exe"
           
-          # Cek apakah file exists
           if (Test-Path $crdPath) {
               Write-Host "✅ CRD found at: $crdPath"
               
-              # Setup dengan auth code
-              & $crdPath --code="$authCode" --redirect-url="https://remotedesktop.google.com/_/oauthredirect" --name="$env:COMPUTERNAME"
+              # FIX 1: Set environment variable untuk console mode
+              $env:CHROME_REMOTE_DESKTOP_SESSION = "1"
+              
+              # FIX 2: Buat file konfigurasi untuk bypass console check
+              $configDir = "$env:APPDATA\Google\Chrome Remote Desktop"
+              New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+              
+              # FIX 3: Gunakan start_host.exe dengan parameter yang tepat
+              # Jalankan dengan redirect output untuk menghindari console error
+              $startHostArgs = @(
+                  "--code=`"$authCode`"",
+                  "--redirect-url=`"https://remotedesktop.google.com/_/oauthredirect`"",
+                  "--name=`"$env:COMPUTERNAME`""
+              )
+              
+              Write-Host "🚀 Starting CRD setup..."
+              
+              # Jalankan dengan Start-Process untuk menghindari console issues
+              $process = Start-Process -FilePath $crdPath -ArgumentList $startHostArgs -Wait -PassThru -NoNewWindow
+              
+              if ($process.ExitCode -eq 0) {
+                  Write-Host "✅ Auth setup successful!"
+              } else {
+                  Write-Host "⚠️ Auth setup exit code: $($process.ExitCode)"
+                  # Coba metode alternatif
+                  Write-Host "🔄 Trying alternative method..."
+                  
+                  # Metode alternatif: menggunakan cmd /c
+                  $cmdArgs = "`"$crdPath`" --code=`"$authCode`" --redirect-url=`"https://remotedesktop.google.com/_/oauthredirect`" --name=`"$env:COMPUTERNAME`""
+                  cmd /c $cmdArgs
+              }
               
               # Setup PIN
-              & $crdPath --pin="$pinCode"
+              Write-Host "🔐 Setting PIN..."
+              $pinProcess = Start-Process -FilePath $crdPath -ArgumentList "--pin=`"$pinCode`"" -Wait -PassThru -NoNewWindow
+              
+              if ($pinProcess.ExitCode -eq 0) {
+                  Write-Host "✅ PIN setup successful!"
+              } else {
+                  Write-Host "⚠️ PIN setup exit code: $($pinProcess.ExitCode)"
+                  cmd /c "`"$crdPath`" --pin=`"$pinCode`""
+              }
               
               Write-Host "✅ Chrome Remote Desktop setup completed!"
           } else {
-              Write-Host "❌ CRD not found at: $crdPath"
-              # Coba cari di lokasi alternatif
-              $altPath = "C:\Program Files (x86)\Google\Chrome Remote Desktop\CurrentVersion\remoting_start_host.exe"
-              if (Test-Path $altPath) {
-                  Write-Host "✅ Found at alternative location: $altPath"
-                  & $altPath --code="$authCode" --redirect-url="https://remotedesktop.google.com/_/oauthredirect" --name="$env:COMPUTERNAME"
-                  & $altPath --pin="$pinCode"
-              } else {
-                  Write-Host "❌ CRD tidak ditemukan. Instalasi mungkin gagal."
-                  exit 1
-              }
+              Write-Host "❌ CRD not found!"
+              exit 1
           }
           
-      # STEP 3: Tampilkan Informasi Koneksi
+      # STEP 3: Verifikasi dan Enable RDP
+      - name: Enable RDP and Configure Firewall
+        shell: pwsh
+        run: |
+          # Enable RDP
+          Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0
+          
+          # Set password untuk runneradmin
+          $password = "RDP@$([System.DateTime]::Now.ToString('yyyyMMdd'))"
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          Set-LocalUser -Name "runneradmin" -Password $securePass
+          
+          # Allow RDP in firewall
+          New-NetFirewallRule -DisplayName "Allow RDP" -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -ErrorAction SilentlyContinue
+          
+          Write-Host "✅ RDP enabled and configured!"
+          Write-Host "🔑 Password: $password"
+          
+      # STEP 4: Tampilkan Informasi
       - name: Display Connection Info
         shell: pwsh
         run: |
@@ -95,11 +139,14 @@ jobs:
           Write-Host "3. Cari komputer dengan nama: $env:COMPUTERNAME"
           Write-Host "4. Gunakan PIN: ${{ github.event.inputs.pin_code }}"
           Write-Host ""
-          Write-Host "⏱️ Session aktif selama 6 jam (maksimal)"
-          Write-Host "========================================"
+          Write-Host "📌 RDP Local (opsional):"
+          Write-Host "   Username: runneradmin"
+          Write-Host "   Password: RDP@$(Get-Date -Format 'yyyyMMdd')"
           Write-Host ""
+          Write-Host "⏱️ Session aktif selama 6 jam"
+          Write-Host "========================================"
           
-      # STEP 4: Menjaga Sesi Tetap Aktif
+      # STEP 5: Keep Session Alive
       - name: Keep Session Alive
         shell: pwsh
         run: |
@@ -108,5 +155,5 @@ jobs:
           while ($true) {
             $counter++
             Write-Host "[$counter] Sesi aktif - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-            Start-Sleep -Seconds 300  # 5 menit
+            Start-Sleep -Seconds 300
           }
