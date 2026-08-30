@@ -1,4 +1,4 @@
-name: noVNC
+name: main noVNC
 
 on:
   workflow_dispatch:
