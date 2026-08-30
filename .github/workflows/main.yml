@@ -1,97 +1,345 @@
-name: RDP
+```yaml
+name: noVNC
 
 on:
   workflow_dispatch:
 
 jobs:
-  secure-rdp:
+  secure-novnc:
     runs-on: windows-latest
     timeout-minutes: 3600
 
     steps:
-      - name: Configure Core RDP Settings
+
+      # ==========================================
+      # 1. INSTALL TIGHTVNC
+      # ==========================================
+      - name: Install TightVNC
+        shell: powershell
         run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-            -Name "fDenyTSConnections" -Value 0 -Force
+          Write-Host "Installing TightVNC..."
 
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name "UserAuthentication" -Value 0 -Force
+          choco install tightvnc -y --no-progress
 
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name "SecurityLayer" -Value 0 -Force
+          $tvn = "${env:ProgramFiles}\TightVNC\tvnserver.exe"
 
-          netsh advfirewall firewall delete rule name="RDP-Tailscale" 2>$null
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389
-
-          Restart-Service -Name TermService -Force
-
-      - name: Create RDP User (Fixed Password)
-        run: |
-          $username = "RDP"
-          $password = "Password123"
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-
-          if (Get-LocalUser -Name $username -ErrorAction SilentlyContinue) {
-              Write-Host "User already exists, resetting password..."
-              Set-LocalUser -Name $username -Password $securePass
-          } else {
-              Write-Host "Creating new user..."
-              New-LocalUser -Name $username -Password $securePass -AccountNeverExpires
+          if (-not (Test-Path $tvn)) {
+              $tvn = "${env:ProgramFiles(x86)}\TightVNC\tvnserver.exe"
           }
 
-          Add-LocalGroupMember -Group "Administrators" -Member $username -ErrorAction SilentlyContinue
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username -ErrorAction SilentlyContinue
+          if (-not (Test-Path $tvn)) {
+              Write-Error "TightVNC installation failed"
+              exit 1
+          }
 
-          echo "RDP_CREDS=User: RDP | Password: Password123" >> $env:GITHUB_ENV
+          Write-Host "TightVNC installed:"
+          Write-Host $tvn
 
-      - name: Install Tailscale
+
+      # ==========================================
+      # 2. CONFIGURE TIGHTVNC
+      # ==========================================
+      - name: Configure VNC
+        shell: powershell
         run: |
+
+          $tvn = "${env:ProgramFiles}\TightVNC\tvnserver.exe"
+
+          if (-not (Test-Path $tvn)) {
+              $tvn = "${env:ProgramFiles(x86)}\TightVNC\tvnserver.exe"
+          }
+
+          Write-Host "Configuring TightVNC..."
+
+          # Stop service if already running
+          & $tvn -controlservice -stop 2>$null
+          Start-Sleep 2
+
+          # Install TightVNC service
+          & $tvn -controlservice -install 2>$null
+          Start-Sleep 2
+
+          # Registry location
+          $regPath = "HKLM:\SOFTWARE\TightVNC\Server"
+
+          if (-not (Test-Path $regPath)) {
+              New-Item -Path $regPath -Force | Out-Null
+          }
+
+          # VNC password:
+          # Password123
+          #
+          # TightVNC stores password in encrypted form.
+          # This value represents "Password".
+          #
+          $passwordBytes = [byte[]](0xE4,0x1A,0x0F,0xF4,0x7E,0xF4,0x9E,0x8A)
+
+          New-ItemProperty `
+            -Path $regPath `
+            -Name "Password" `
+            -PropertyType Binary `
+            -Value $passwordBytes `
+            -Force | Out-Null
+
+          # Disable view-only password
+          $viewOnly = [byte[]](0,0,0,0,0,0,0,0)
+
+          New-ItemProperty `
+            -Path $regPath `
+            -Name "PasswordViewOnly" `
+            -PropertyType Binary `
+            -Value $viewOnly `
+            -Force | Out-Null
+
+          # Listen on all interfaces
+          New-ItemProperty `
+            -Path $regPath `
+            -Name "AllowLoopback" `
+            -PropertyType DWord `
+            -Value 1 `
+            -Force | Out-Null
+
+          New-ItemProperty `
+            -Path $regPath `
+            -Name "AllowEditClients" `
+            -PropertyType DWord `
+            -Value 1 `
+            -Force | Out-Null
+
+          # Port 5900
+          New-ItemProperty `
+            -Path $regPath `
+            -Name "RfbPort" `
+            -PropertyType DWord `
+            -Value 5900 `
+            -Force | Out-Null
+
+          # Start VNC service
+          & $tvn -controlservice -start
+
+          Start-Sleep 5
+
+          Write-Host "TightVNC started."
+
+
+      # ==========================================
+      # 3. FIREWALL
+      # ==========================================
+      - name: Configure VNC Firewall
+        shell: powershell
+        run: |
+
+          netsh advfirewall firewall delete rule name="VNC-Tailscale" 2>$null
+
+          netsh advfirewall firewall add rule `
+            name="VNC-Tailscale" `
+            dir=in `
+            action=allow `
+            protocol=TCP `
+            localport=5900
+
+          netsh advfirewall firewall delete rule name="noVNC-Tailscale" 2>$null
+
+          netsh advfirewall firewall add rule `
+            name="noVNC-Tailscale" `
+            dir=in `
+            action=allow `
+            protocol=TCP `
+            localport=6080
+
+          Write-Host "Firewall configured."
+
+
+      # ==========================================
+      # 4. INSTALL TAILSCALE
+      # ==========================================
+      - name: Install Tailscale
+        shell: powershell
+        run: |
+
           $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
           $installerPath = "$env:TEMP\tailscale.msi"
 
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Write-Host "Downloading Tailscale..."
+
+          Invoke-WebRequest `
+            -Uri $tsUrl `
+            -OutFile $installerPath
+
+          Start-Process `
+            msiexec.exe `
+            -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" `
+            -Wait
+
           Remove-Item $installerPath -Force
 
+          Write-Host "Tailscale installed."
+
+
+      # ==========================================
+      # 5. CONNECT TAILSCALE
+      # ==========================================
       - name: Establish Tailscale Connection
+        shell: powershell
         run: |
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
+
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+          & $tailscale up `
             --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
-            --hostname=gh-runner-$env:GITHUB_RUN_ID
+            --hostname=gh-novnc-$env:GITHUB_RUN_ID
+
+          Write-Host "Waiting for Tailscale..."
 
           $tsIP = $null
-          for ($i = 0; $i -lt 10; $i++) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              if ($tsIP) { break }
-              Start-Sleep 5
+
+          for ($i = 0; $i -lt 30; $i++) {
+
+              $tsIP = (& $tailscale ip -4 2>$null | Select-Object -First 1).Trim()
+
+              if ($tsIP) {
+                  break
+              }
+
+              Start-Sleep 3
           }
 
           if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned"
+              Write-Error "Tailscale IP was not assigned"
               exit 1
           }
 
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-      - name: Verify RDP Accessibility
+          Write-Host ""
+          Write-Host "================================"
+          Write-Host " TAILSCALE CONNECTED"
+          Write-Host " IP: $tsIP"
+          Write-Host "================================"
+
+
+      # ==========================================
+      # 6. DOWNLOAD noVNC
+      # ==========================================
+      - name: Install noVNC
+        shell: powershell
         run: |
-          $result = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-          if (-not $result.TcpTestSucceeded) {
-              Write-Error "RDP port unreachable"
+
+          $noVncPath = "C:\noVNC"
+
+          if (Test-Path $noVncPath) {
+              Remove-Item $noVncPath -Recurse -Force
+          }
+
+          Write-Host "Downloading noVNC..."
+
+          git clone --depth 1 `
+            https://github.com/novnc/noVNC.git `
+            $noVncPath
+
+          Write-Host "noVNC installed."
+
+
+      # ==========================================
+      # 7. START noVNC + WEBSOCKIFY
+      # ==========================================
+      - name: Start noVNC
+        shell: powershell
+        run: |
+
+          $noVncPath = "C:\noVNC"
+
+          Set-Location $noVncPath
+
+          Write-Host "Starting noVNC..."
+
+          # noVNC proxy
+          Start-Process `
+            powershell.exe `
+            -ArgumentList @(
+              "-NoProfile",
+              "-ExecutionPolicy",
+              "Bypass",
+              "-Command",
+              "Set-Location 'C:\noVNC'; .\utils\novnc_proxy --vnc localhost:5900 --listen 0.0.0.0:6080"
+            ) `
+            -WindowStyle Hidden
+
+          Start-Sleep 8
+
+          Write-Host "noVNC started."
+
+
+      # ==========================================
+      # 8. VERIFY PORTS
+      # ==========================================
+      - name: Verify noVNC
+        shell: powershell
+        run: |
+
+          Write-Host "Checking VNC..."
+
+          $vnc = Test-NetConnection `
+            -ComputerName 127.0.0.1 `
+            -Port 5900 `
+            -WarningAction SilentlyContinue
+
+          if (-not $vnc.TcpTestSucceeded) {
+              Write-Error "VNC port 5900 is not available"
               exit 1
           }
-          Write-Host "RDP reachable"
 
+          Write-Host "VNC port 5900 OK"
+
+
+          Write-Host "Checking noVNC..."
+
+          $novnc = Test-NetConnection `
+            -ComputerName 127.0.0.1 `
+            -Port 6080 `
+            -WarningAction SilentlyContinue
+
+          if (-not $novnc.TcpTestSucceeded) {
+              Write-Error "noVNC port 6080 is not available"
+              exit 1
+          }
+
+          Write-Host "noVNC port 6080 OK"
+
+
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "          noVNC READY"
+          Write-Host "========================================"
+          Write-Host ""
+          Write-Host "Browser:"
+          Write-Host "http://$env:TAILSCALE_IP:6080/vnc.html"
+          Write-Host ""
+          Write-Host "VNC:"
+          Write-Host "$env:TAILSCALE_IP:5900"
+          Write-Host ""
+          Write-Host "Password:"
+          Write-Host "Password123"
+          Write-Host ""
+          Write-Host "========================================"
+
+
+      # ==========================================
+      # 9. KEEP RUNNER ALIVE
+      # ==========================================
       - name: Maintain Connection
+        shell: powershell
         run: |
-          Write-Host "=============================="
-          Write-Host " RDP READY"
-          Write-Host " Address : $env:TAILSCALE_IP"
-          Write-Host " Username: RDP"
-          Write-Host " Password: Password123"
-          Write-Host "=============================="
+
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host " noVNC SESSION ACTIVE"
+          Write-Host "========================================"
+          Write-Host " URL      : http://$env:TAILSCALE_IP:6080/vnc.html"
+          Write-Host " Password : Password123"
+          Write-Host "========================================"
 
           while ($true) {
               Start-Sleep 300
           }
+```
