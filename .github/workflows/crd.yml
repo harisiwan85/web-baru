@@ -1,10 +1,10 @@
-name: Windows CRD
+name: Windows crd
 
 on:
   workflow_dispatch:
     inputs:
       auth_code:
-        description: 'Chrome Remote Desktop Auth Code'
+        description: 'Chrome Remote Desktop Auth Code (copy dari CRD)'
         required: true
         type: string
       pin_code:
@@ -16,7 +16,7 @@ on:
 jobs:
   windows-rdp:
     runs-on: windows-latest
-    timeout-minutes: 360  # Maksimal 6 jam
+    timeout-minutes: 360
     
     steps:
       - name: Setup Chrome Remote Desktop
@@ -30,23 +30,27 @@ jobs:
           # Install silently
           Start-Process -FilePath $installer -ArgumentList "/S" -Wait
           
-          # Set pin
-          New-Item -Path "HKLM:\SOFTWARE\Policies\Google\Chrome" -Force | Out-Null
-          New-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Google\Chrome" -Name "RemoteAccessHostAllowClientPairing" -Value 1 -PropertyType DWord -Force | Out-Null
-          
-          # Jalankan setup dengan auth code dari input
+          # Setup Chrome Remote Desktop dengan auth code
           $authCode = "${{ github.event.inputs.auth_code }}"
           $pinCode = "${{ github.event.inputs.pin_code }}"
           
-          # Hapus bagian "--start" dari auth code jika ada
+          # HAPUS bagian "--start" dari auth code jika ada
           $authCode = $authCode -replace "--start", ""
           $authCode = $authCode.Trim()
           
-          # Jalankan perintah auth
-          & "$env:ProgramFiles\Google\Chrome Remote Desktop\start_host.exe" --code="$authCode" --redirect-url="https://remotedesktop.google.com/_/oauthredirect" --name="$env:COMPUTERNAME"
+          # Jika auth code masih mengandung perintah lengkap, ekstrak hanya code-nya
+          if ($authCode -match '--code="([^"]+)"') {
+              $authCode = $Matches[1]
+          }
+          
+          # Path ke executable CRD
+          $crdPath = "${Env:PROGRAMFILES(X86)}\Google\Chrome Remote Desktop\CurrentVersion\remoting_start_host.exe"
+          
+          # Jalankan perintah auth - GABUNGKAN path dan argumen
+          & $crdPath --code="$authCode" --redirect-url="https://remotedesktop.google.com/_/oauthredirect" --name="$env:COMPUTERNAME"
           
           # Setup PIN
-          & "$env:ProgramFiles\Google\Chrome Remote Desktop\start_host.exe" --pin="$pinCode"
+          & $crdPath --pin="$pinCode"
           
           Write-Host "Chrome Remote Desktop siap!"
           
