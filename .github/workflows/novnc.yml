@@ -6,11 +6,329 @@ on:
 jobs:
   novnc:
     runs-on: windows-latest
+    timeout-minutes: 3600
 
     steps:
-      - name: Test Runner
+
+      # ==========================================
+      # 1. INSTALL TIGHTVNC
+      # ==========================================
+      - name: Install TightVNC
         shell: powershell
         run: |
-          Write-Host "================================"
-          Write-Host "noVNC workflow started"
-          Write-Host "================================"
+          $url = "https://www.tightvnc.com/download/2.8.81/tightvnc-2.8.81-gpl-setup-64bit.msi"
+          $file = "$env:TEMP\tightvnc.msi"
+
+          Write-Host "Downloading TightVNC..."
+
+          Invoke-WebRequest -Uri $url -OutFile $file
+
+          Write-Host "Installing TightVNC..."
+
+          Start-Process msiexec.exe `
+            -ArgumentList "/i `"$file`" /quiet /norestart" `
+            -Wait
+
+          Remove-Item $file -Force
+
+          Write-Host "TightVNC installed."
+
+
+      # ==========================================
+      # 2. START TIGHTVNC
+      # ==========================================
+      - name: Start VNC
+        shell: powershell
+        run: |
+          $service = Get-Service -Name "tvnserver" -ErrorAction SilentlyContinue
+
+          if ($service) {
+              Write-Host "TightVNC service found."
+              
+              if ($service.Status -ne "Running") {
+                  Start-Service -Name "tvnserver"
+                  Start-Sleep 5
+              }
+          }
+          else {
+              Write-Host "TightVNC service not found."
+              Write-Host "Trying to start tvnserver..."
+
+              $paths = @(
+                  "${env:ProgramFiles}\TightVNC\tvnserver.exe",
+                  "${env:ProgramFiles(x86)}\TightVNC\tvnserver.exe"
+              )
+
+              foreach ($path in $paths) {
+                  if (Test-Path $path) {
+                      Start-Process $path -WindowStyle Hidden
+                      break
+                  }
+              }
+
+              Start-Sleep 5
+          }
+
+          Write-Host "Checking VNC port..."
+
+          $vnc = Test-NetConnection `
+            -ComputerName 127.0.0.1 `
+            -Port 5900 `
+            -WarningAction SilentlyContinue
+
+          if (-not $vnc.TcpTestSucceeded) {
+              Write-Error "VNC port 5900 is not available."
+              exit 1
+          }
+
+          Write-Host "VNC port 5900 OK."
+
+
+      # ==========================================
+      # 3. INSTALL TAILSCALE
+      # ==========================================
+      - name: Install Tailscale
+        shell: powershell
+        run: |
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $file = "$env:TEMP\tailscale.msi"
+
+          Write-Host "Downloading Tailscale..."
+
+          Invoke-WebRequest -Uri $url -OutFile $file
+
+          Write-Host "Installing Tailscale..."
+
+          Start-Process msiexec.exe `
+            -ArgumentList "/i `"$file`" /quiet /norestart" `
+            -Wait
+
+          Remove-Item $file -Force
+
+          $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+          if (-not (Test-Path $ts)) {
+              Write-Error "Tailscale not found."
+              exit 1
+          }
+
+          echo "TAILSCALE=$ts" >> $env:GITHUB_ENV
+
+          Write-Host "Tailscale installed."
+
+
+      # ==========================================
+      # 4. CONNECT TAILSCALE
+      # ==========================================
+      - name: Connect Tailscale
+        shell: powershell
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          Write-Host "Connecting Tailscale..."
+
+          & "$env:TAILSCALE" up `
+            --authkey="$env:TAILSCALE_AUTH_KEY" `
+            --hostname="gh-novnc-$env:GITHUB_RUN_ID"
+
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "Tailscale connection failed."
+              exit 1
+          }
+
+          $ip = $null
+
+          for ($i = 0; $i -lt 30; $i++) {
+
+              $ip = (& "$env:TAILSCALE" ip -4 2>$null | Select-Object -First 1).Trim()
+
+              if ($ip) {
+                  break
+              }
+
+              Start-Sleep 2
+          }
+
+          if (-not $ip) {
+              Write-Error "Tailscale IP not found."
+              exit 1
+          }
+
+          echo "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
+
+          Write-Host ""
+          Write-Host "Tailscale IP: $ip"
+
+
+      # ==========================================
+      # 5. INSTALL PYTHON
+      # ==========================================
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+
+      # ==========================================
+      # 6. INSTALL NOVNC
+      # ==========================================
+      - name: Download noVNC
+        shell: powershell
+        run: |
+          $path = "C:\noVNC"
+
+          if (Test-Path $path) {
+              Remove-Item $path -Recurse -Force
+          }
+
+          Write-Host "Downloading noVNC..."
+
+          git clone --depth 1 `
+            https://github.com/novnc/noVNC.git `
+            $path
+
+          if (-not (Test-Path "$path\vnc.html")) {
+              Write-Error "noVNC download failed."
+              exit 1
+          }
+
+          Write-Host "noVNC downloaded."
+
+
+      # ==========================================
+      # 7. INSTALL WEBSOCKIFY
+      # ==========================================
+      - name: Install Websockify
+        shell: powershell
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install websockify
+
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "websockify installation failed."
+              exit 1
+          }
+
+          Write-Host "websockify installed."
+
+
+      # ==========================================
+      # 8. START NOVNC
+      # ==========================================
+      - name: Start noVNC
+        shell: powershell
+        run: |
+          Write-Host "Starting noVNC..."
+
+          $log = "C:\noVNC\novnc.log"
+
+          Start-Process `
+            -FilePath "python" `
+            -ArgumentList "-m websockify --web=C:\noVNC 0.0.0.0:6080 127.0.0.1:5900" `
+            -RedirectStandardOutput $log `
+            -RedirectStandardError "C:\noVNC\novnc-error.log" `
+            -WindowStyle Hidden
+
+          Start-Sleep 8
+
+          $port = Test-NetConnection `
+            -ComputerName 127.0.0.1 `
+            -Port 6080 `
+            -WarningAction SilentlyContinue
+
+          if (-not $port.TcpTestSucceeded) {
+
+              Write-Host "noVNC failed."
+
+              if (Test-Path "C:\noVNC\novnc-error.log") {
+                  Get-Content "C:\noVNC\novnc-error.log"
+              }
+
+              exit 1
+          }
+
+          Write-Host "noVNC port 6080 OK."
+
+
+      # ==========================================
+      # 9. FIREWALL
+      # ==========================================
+      - name: Configure Firewall
+        shell: powershell
+        run: |
+          netsh advfirewall firewall delete rule name="noVNC" 2>$null
+
+          netsh advfirewall firewall add rule `
+            name="noVNC" `
+            dir=in `
+            action=allow `
+            protocol=TCP `
+            localport=6080
+
+          Write-Host "Firewall configured."
+
+
+      # ==========================================
+      # 10. DISPLAY INFORMATION
+      # ==========================================
+      - name: Show Connection
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "=========================================="
+          Write-Host "             noVNC READY"
+          Write-Host "=========================================="
+          Write-Host ""
+          Write-Host "Tailscale IP:"
+          Write-Host "$env:TAILSCALE_IP"
+          Write-Host ""
+          Write-Host "Open in browser:"
+          Write-Host "http://$env:TAILSCALE_IP:6080/vnc.html"
+          Write-Host ""
+          Write-Host "VNC port:"
+          Write-Host "5900"
+          Write-Host ""
+          Write-Host "=========================================="
+
+
+      # ==========================================
+      # 11. KEEP RUNNER ALIVE
+      # ==========================================
+      - name: Maintain Connection
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "=========================================="
+          Write-Host "          NOVNC SESSION ACTIVE"
+          Write-Host "=========================================="
+          Write-Host ""
+          Write-Host "URL:"
+          Write-Host "http://$env:TAILSCALE_IP:6080/vnc.html"
+          Write-Host ""
+          Write-Host "=========================================="
+
+          while ($true) {
+
+              $novnc = Get-NetTCPConnection `
+                -LocalPort 6080 `
+                -State Listen `
+                -ErrorAction SilentlyContinue
+
+              if (-not $novnc) {
+                  Write-Host "WARNING: noVNC is not listening."
+              }
+              else {
+                  Write-Host "$(Get-Date -Format 'HH:mm:ss') - noVNC OK"
+              }
+
+              $vnc = Get-NetTCPConnection `
+                -LocalPort 5900 `
+                -State Listen `
+                -ErrorAction SilentlyContinue
+
+              if (-not $vnc) {
+                  Write-Host "WARNING: VNC is not listening."
+              }
+
+              Start-Sleep 60
+          }
